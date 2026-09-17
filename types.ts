@@ -10,6 +10,11 @@ export interface VisualParams {
   visual_signature_prompt: string;
   color_palette?: string;
   material_focus?: string;
+  // --- New: fields to better capture selling point visual intent ---
+  product_presentation: string;   // How the product is showcased/positioned/emphasized
+  hero_element: string;           // The visual focal point of the image
+  mood_atmosphere: string;        // Emotional tone and atmosphere
+  spatial_relationship: string;   // Spatial arrangement between elements
 }
 export interface GlobalAnalysis {
   style_description: string;
@@ -20,12 +25,10 @@ export interface NarrativeConcept {
   scene_setting: string;
   subject_setup: string;
   props: string;
-  copywriting: {
-    headline: string;
-    sub_headline: string;
-  };
+  // copywriting removed — pure image generation, no text overlay
   emotion_keywords: string[];
-  _autoCorrected?: boolean; // Tracking if invalid tokens were stripped
+  model_choreography?: string;    // New: multi-model staging directions when models are present
+  _autoCorrected?: boolean;       // Tracking if invalid tokens were stripped
 }
 export interface MediaAsset {
   mediaId: string;
@@ -51,6 +54,10 @@ export interface SellingPoint {
   };
   status: 'idle' | 'analyzing' | 'narrating' | 'compiling' | 'awaiting_review' | 'generating' | 'completed' | 'error';
   error?: string;
+}
+export interface ModelReference {
+  model?: { base64: string; mimeType: string };
+  suit?: { base64: string; mimeType: string };
 }
 export interface GlobalContext {
   product_info: string;
