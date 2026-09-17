@@ -189,7 +189,7 @@ export default function VisualPromptApp() {
         const visual = await extractVisualParams(sp, currentGlobal.global_analysis);
         
         updateSP(i, { status: 'narrating', enrichment: { ...sp.enrichment, visual_params: visual } });
-        const narrative = await generateNarrative({ ...sp, enrichment: { ...sp.enrichment, visual_params: visual } }, currentGlobal);
+        const narrative = await generateNarrative({ ...sp, enrichment: { ...sp.enrichment, visual_params: visual } }, currentGlobal, sellingPoints);
         
         updateSP(i, { status: 'compiling', enrichment: { ...sp.enrichment, visual_params: visual, narrative_concept: narrative } });
         const prompt = compilePrompt({ ...sp, enrichment: { ...sp.enrichment, visual_params: visual, narrative_concept: narrative } }, currentGlobal);
@@ -212,27 +212,30 @@ export default function VisualPromptApp() {
       updateSP(index, { status: 'generating' });
       
       const prompt = sp.enrichment.final_prompt;
+      
+      // Collect reference images for the generation model.
+      // IMPORTANT: Selling point reference images are EXCLUDED — only text structure
+      // is used for selling point direction (to avoid generated images looking too similar).
+      // Priority order: model/outfit images first (for character consistency), then product, then env.
       const mediaIds: string[] = [];
-      const visionContext: string[] = ["[Vision Context]"];
-      const link = (tag: string, mediaId: string, label: string) => {
-        if (prompt.includes(tag)) {
-          mediaIds.push(mediaId);
-          visionContext.push(`${label} -> <ID: ${mediaId}>`);
-        }
-      };
-      if (globalContext.productImage) link("{{PRODUCT}}", globalContext.productImage.mediaId, "Main Product");
-      if (globalContext.environmentImage) link("{{ENV}}", globalContext.environmentImage.mediaId, "Env Plate");
-      globalContext.modelReferences.forEach((m, idx) => {
-        const char = String.fromCharCode(65 + idx);
-        if (m.model) link(`{{MODEL_${char}}}`, m.model.mediaId, `Model ${char}`);
-        if (m.suit) link(`{{OUTFIT_${char}}}`, m.suit.mediaId, `Outfit ${char}`);
+      
+      // 1. Model & outfit images — highest priority (character consistency, up to 5 people)
+      globalContext.modelReferences.forEach((m) => {
+        if (m.model) mediaIds.push(m.model.mediaId);
+        if (m.suit) mediaIds.push(m.suit.mediaId);
       });
-      const fullPrompt = `${visionContext.join('\n')}\n\n${prompt}`;
+      
+      // 2. Product image
+      if (globalContext.productImage) mediaIds.push(globalContext.productImage.mediaId);
+      
+      // 3. Environment image
+      if (globalContext.environmentImage) mediaIds.push(globalContext.environmentImage.mediaId);
+
       const result = await Flow.generate.image({
-        prompt: fullPrompt,
+        prompt,
         modelDisplayName: '🍌 Nano Banana Pro',
         aspectRatio: parseAspectRatio(globalContext.output_spec),
-        referenceImageMediaIds: mediaIds.slice(0, 10)
+        referenceImageMediaIds: mediaIds.slice(0, 14) // SDK supports max 14 images
       });
       updateSP(index, { status: 'completed', enrichment: { ...sp.enrichment, generatedImage: result } });
     } catch (err) {
@@ -334,9 +337,11 @@ export default function VisualPromptApp() {
                       <img src={`data:${sp.enrichment.generatedImage.mimeType};base64,${sp.enrichment.generatedImage.base64}`} className="w-48 h-48 object-cover rounded-lg border border-white/10" />
                       <div className="flex-1 flex flex-col justify-between">
                          <div>
-                            <span className="text-[9px] uppercase text-white/30 font-bold">Headline Concept</span>
-                            <p className="text-sm font-medium text-white/90">{sp.enrichment.narrative_concept?.copywriting.headline}</p>
-                            <p className="text-xs text-white/50 mt-1">{sp.enrichment.narrative_concept?.copywriting.sub_headline}</p>
+                            <span className="text-[9px] uppercase text-white/30 font-bold">Selling Point</span>
+                            <p className="text-sm font-medium text-white/90">{sp.name}</p>
+                            {sp.enrichment.narrative_concept?.emotion_keywords && (
+                              <p className="text-xs text-white/50 mt-1">{sp.enrichment.narrative_concept.emotion_keywords.join(' · ')}</p>
+                            )}
                          </div>
                          <div className="flex gap-2 mt-4">
                             <PillButton variant="outline" className="flex-1" onClick={() => updateSP(idx, { status: 'awaiting_review' })}>Tweak Prompt</PillButton>
