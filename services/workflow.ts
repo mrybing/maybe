@@ -48,27 +48,28 @@ Output ONLY valid JSON with fields: style_description, lighting_mood, color_stra
  *    spatial_relationship — these capture the INTENT of the reference, not just technical params.
  * 4. Rewritten prompt to prioritize understanding HOW the selling point is visually communicated.
  */
-export async function extractVisualParams(sp: SellingPoint, _globalStyle?: GlobalAnalysis | null): Promise<VisualParams> {
+export async function extractVisualParams(sp: SellingPoint, globalContext: GlobalContext): Promise<VisualParams> {
   if (!sp.referenceImage) throw new Error('Missing reference image');
-  // NOTE: _globalStyle is intentionally UNUSED here. The selling point's visual extraction
-  // must reflect its own reference image without contamination from global style bias.
+  // product_info tells the LLM what the ACTUAL product is (e.g. "wireless earbuds"),
+  // so it won't mistake clothing or other elements for the product.
+  const productIdentity = globalContext.product_info
+    ? `\nCRITICAL — THE PRODUCT BEING ADVERTISED IS: ${globalContext.product_info}\nWhen analyzing "product presentation" and "hero element", focus on THIS product specifically.\nOther items in the image (clothing, accessories worn by models, furniture, etc.) are NOT the product — they are props or styling.\n`
+    : '';
   const systemInstruction = `You are a professional commercial photography analyst.
 Analyze this reference image to understand the VISUAL STRATEGY for communicating a selling point.
-
+${productIdentity}
 ANALYSIS PRIORITIES (in order):
-1. PRODUCT PRESENTATION — How is the hero product/subject showcased? What makes it stand out? Describe the presentation strategy (e.g. "product floating at center with dramatic rim light", "product held by model at eye-level, intimate close-up").
+1. PRODUCT PRESENTATION — How is the advertised product${globalContext.product_info ? ` (${globalContext.product_info})` : ''} showcased? What makes it stand out? Describe the presentation strategy (e.g. "product floating at center with dramatic rim light", "product held by model at eye-level, intimate close-up").
 2. HERO ELEMENT — What is the single most dominant visual element? What draws the eye first?
 3. MOOD & ATMOSPHERE — What emotion does this image convey? What is the overall feeling?
 4. SPATIAL RELATIONSHIP — How are elements arranged relative to each other? Foreground/background/layering.
 5. TECHNICAL EXECUTION — Lighting setup, camera angle, lens characteristics, composition framework.
-
 You MAY and SHOULD describe the product and how it appears in the image.
 Do NOT describe specific human faces in detail (but body position, gesture, and styling are fine).
-
 Output ONLY valid JSON with these fields:
 {
   "subject": "main subject description and its visual treatment",
-  "product_presentation": "how the product/hero subject is staged, positioned, and emphasized",
+  "product_presentation": "how the advertised product${globalContext.product_info ? ` (${globalContext.product_info})` : ''} is staged, positioned, and emphasized — NOT other items like clothing",
   "hero_element": "the single most dominant visual element in the frame",
   "mood_atmosphere": "the emotional tone and atmospheric quality",
   "spatial_relationship": "arrangement of elements, depth layers, foreground/background relationship",
@@ -83,7 +84,7 @@ Output ONLY valid JSON with these fields:
   "material_focus": "key material/texture qualities visible"
 }`;
   const { text } = await Flow.generate.text(
-    `Analyze the visual strategy in this reference image for selling point: "${sp.name}" — "${sp.description}".`,
+    `Analyze the visual strategy in this reference image for selling point: "${sp.name}" — "${sp.description}".${globalContext.product_info ? ` The product being advertised is: ${globalContext.product_info}.` : ''}`,
     {
       systemInstruction,
       images: [{ base64: sp.referenceImage.base64, mimeType: sp.referenceImage.mimeType }]
@@ -94,13 +95,13 @@ Output ONLY valid JSON with these fields:
 // --- Narrative Helpers ---
 function buildInventory(globalContext: GlobalContext): string[] {
   const inventory: string[] = [];
-  if (globalContext.productImage) inventory.push("{{PRODUCT}}");
+  if (globalContext.productImage) inventory.push("{{PRODUCT}}");  // The actual product being advertised
   if (globalContext.environmentImage) inventory.push("{{ENV}}");
   // NOTE: {{STYLE}} removed from inventory — global style should influence tone, not be placed in scene.
   globalContext.modelReferences.forEach((m, i) => {
     const letter = String.fromCharCode(65 + i);
-    if (m.model) inventory.push(`{{MODEL_${letter}}}`);
-    if (m.suit) inventory.push(`{{OUTFIT_${letter}}}`);
+    if (m.model) inventory.push(`{{MODEL_${letter}}}`);        // Model's face/body for character consistency
+    if (m.suit) inventory.push(`{{OUTFIT_${letter}}}`);        // Model's WARDROBE — NOT the advertised product
   });
   return inventory;
 }
@@ -119,22 +120,6 @@ function stripInvalidTokens(text: string, invalid: string[]): string {
   let out = text;
   invalid.forEach(tag => { out = out.split(tag).join(''); });
   return out.replace(/\s{2,}/g, ' ').trim();
-}
-/**
- * Build a description of model references for the LLM to understand.
- * This tells the LLM what each model image looks like.
- */
-function buildModelImageDescriptions(globalContext: GlobalContext): string {
-  const modelRefs = globalContext.modelReferences.filter(m => m.model || m.suit);
-  if (modelRefs.length === 0) return '';
-  const lines = modelRefs.map((m, i) => {
-    const letter = String.fromCharCode(65 + i);
-    const parts: string[] = [];
-    if (m.model) parts.push(`{{MODEL_${letter}}}: See attached image (model face/body reference — MUST maintain this person's appearance)`);
-    if (m.suit) parts.push(`{{OUTFIT_${letter}}}: See attached image (outfit/styling reference — MUST maintain this clothing's appearance)`);
-    return parts.join('\n');
-  });
-  return lines.join('\n');
 }
 /**
  * Collect all images that should be passed to generateNarrative for the LLM to see.
@@ -166,7 +151,8 @@ function buildImageLegend(sp: SellingPoint, globalContext: GlobalContext): strin
   const legend: string[] = [];
   let idx = 1;
   if (globalContext.productImage) {
-    legend.push(`Image ${idx}: {{PRODUCT}} — The hero product. This MUST be prominently featured.`);
+    const productName = globalContext.product_info ? ` (${globalContext.product_info})` : '';
+    legend.push(`Image ${idx}: {{PRODUCT}}${productName} — THE PRODUCT BEING ADVERTISED. This MUST be the visual hero and prominently featured. Everything else in the scene serves THIS product.`);
     idx++;
   }
   if (sp.referenceImage) {
@@ -180,7 +166,7 @@ function buildImageLegend(sp: SellingPoint, globalContext: GlobalContext): strin
       idx++;
     }
     if (m.suit) {
-      legend.push(`Image ${idx}: {{OUTFIT_${letter}}} — Clothing/styling reference for Model ${letter}.`);
+      legend.push(`Image ${idx}: {{OUTFIT_${letter}}} — WARDROBE for Model ${letter} (what this model wears). This is NOT the advertised product — it is the model's clothing/styling.`);
       idx++;
     }
   });
@@ -220,7 +206,6 @@ export async function generateNarrative(
     .filter(s => s.sp_id !== sp.sp_id && s.enrichment.narrative_concept)
     .map(s => `- "${s.name}": ${s.enrichment.narrative_concept!.scene_setting}`)
     .join('\n');
-
   const buildSystemInstruction = (correction?: string) => {
     const modelChoreographySection = modelCount > 1 ? `
 MULTI-MODEL CHOREOGRAPHY:
@@ -236,25 +221,23 @@ SINGLE MODEL DIRECTION:
 - The model's role is to provide HUMAN CONTEXT — showing how the product fits into life.
 - Product remains the hero; the model is a supporting element.
 ` : '';
-
     const crossSPSection = otherSPContext ? `
 OTHER SCENES IN THIS CAMPAIGN (for visual consistency reference):
 ${otherSPContext}
 Maintain visual consistency with these scenes while keeping this selling point's focus distinct.
 ` : '';
-
     return `You are a Creative Director designing a scene for premium product photography.
 You will receive reference images — study them carefully before writing.
-
 ATTACHED IMAGES:
 ${imageLegend}
-
+═══════════════════════════════════════════
+PRODUCT IDENTITY — WHAT WE ARE ADVERTISING:
+${globalContext.product_info || 'See {{PRODUCT}} image'}
+This is the ONLY product being promoted. All other items (model clothing, furniture, etc.) are props/styling.
 ═══════════════════════════════════════════
 PRIMARY DIRECTIVE — SELLING POINT (This is your #1 priority):
 Name: "${sp.name}"
 Description: "${sp.description}"
-═══════════════════════════════════════════
-
 SELLING POINT VISUAL APPROACH (extracted from the reference image — REPRODUCE this approach):
 - Product Presentation: ${visual.product_presentation}
 - Hero Element: ${visual.hero_element}
@@ -268,29 +251,31 @@ SELLING POINT VISUAL APPROACH (extracted from the reference image — REPRODUCE 
 - Visual Signature: ${visual.visual_signature_prompt}
 ${visual.color_palette ? `- Color Palette: ${visual.color_palette}` : ''}
 ${visual.material_focus ? `- Material Focus: ${visual.material_focus}` : ''}
-
 Target Aspect Ratio: ${aspectRatio}
 Image Mode: ${visual.image_type}${visual.image_type === 'CGI_Abstract' ? ' — avoid naturalistic human actions, use abstract/surreal staging' : ''}
-
 AVAILABLE VISUAL ASSETS (Use ONLY these exact tokens):
 ${inventory.join(', ')}
+TOKEN SEMANTICS:
+- {{PRODUCT}} = the advertised product${globalContext.product_info ? ` (${globalContext.product_info})` : ''}. This is what we are selling.
+- {{MODEL_X}} = a human model for character consistency. They are NOT the product.
+- {{OUTFIT_X}} = the model's WARDROBE/CLOTHING. This is what the model WEARS. It is NOT the advertised product.
+- {{ENV}} = environment/location plate.
 ${modelChoreographySection}
 BRAND CONTEXT (reference only — do NOT let this override the selling point direction):
 Tone: ${globalContext.brand_tone || 'Premium'}
-Product Info: ${globalContext.product_info}
 ${crossSPSection}
 RULES:
 1. MATERIAL AVAILABILITY: Only use tags from the AVAILABLE VISUAL ASSETS list. Copy tags EXACTLY as written.
-2. If {{PRODUCT}} is available, it MUST appear prominently in subject_setup or scene_setting.
+2. If {{PRODUCT}} is available, it MUST appear prominently in subject_setup or scene_setting. The product is ${globalContext.product_info || '{{PRODUCT}}'}, NOT model clothing.
 3. FIDELITY: Do not alter the product's shape, logo, or proportions.
 4. SPATIAL LOGIC: For ${aspectRatio}, ensure scene_setting accounts for ${aspectRatio === '16:9' ? 'horizontal sweep and background depth' : aspectRatio === '9:16' ? 'vertical focus and headroom' : 'balanced framing'}.
 5. The scene MUST directly serve the selling point "${sp.name}" — every element should reinforce why this selling point matters visually.
 6. REPRODUCE the visual approach from the selling point reference image: match its composition strategy, product staging, and mood.
+7. PRODUCT vs OUTFIT DISTINCTION: {{OUTFIT_X}} is the model's clothing — it is a styling prop, NOT the product. The advertised product is ONLY {{PRODUCT}}${globalContext.product_info ? ` (${globalContext.product_info})` : ''}. Never treat outfits as the hero product.
 ${correction ? `\nCORRECTION NEEDED: ${correction}\nRewrite strictly following rule 1.` : ''}
-
 Output ONLY valid JSON with fields:
 - scene_setting (string): The environment and context of the scene
-- subject_setup (string): How the main subject(s) and product are arranged
+- subject_setup (string): How the main subject(s) and the advertised product${globalContext.product_info ? ` (${globalContext.product_info})` : ''} are arranged
 - props (string): Supporting elements and details
 - emotion_keywords (string[]): 3-5 emotional descriptors${modelCount > 1 ? '\n- model_choreography (string): Detailed spatial direction for each model' : ''}`;
   };
@@ -359,26 +344,23 @@ export function compilePrompt(sp: SellingPoint, globalContext: GlobalContext): s
   } else if (v.image_type === 'Lifestyle_Commercial') {
     stylePrefix = "Lifestyle commercial photography, editorial realism, cinematic location";
   }
-
   // --- BLOCK 1: SELLING POINT (HERO BLOCK — most prominent, most detailed) ---
+  const productLine = globalContext.product_info ? `Product: ${globalContext.product_info}\n` : '';
   const sellingPointBlock = `[SELLING POINT — PRIMARY FOCUS: "${sp.name}"]
-${sp.description}
+${productLine}${sp.description}
 Product Presentation: ${v.product_presentation}
 Hero Element: ${v.hero_element}
 Mood: ${v.mood_atmosphere}
 Visual Approach: ${v.visual_signature_prompt}`;
-
   // --- BLOCK 2: SCENE DIRECTION (from narrative) ---
   let sceneBlock = `[SCENE]
 ${n.scene_setting}. ${n.subject_setup}.
 Props: ${n.props}.
 Emotion: ${n.emotion_keywords.join(', ')}.`;
-
   // --- BLOCK 2b: MODEL CHOREOGRAPHY (if multi-model) ---
   if (n.model_choreography) {
     sceneBlock += `\nModel Direction: ${n.model_choreography}`;
   }
-
   // --- BLOCK 3: VISUAL EXECUTION (merged technical params — no duplication) ---
   const technicalParts = [
     `${stylePrefix}`,
@@ -390,7 +372,6 @@ Emotion: ${n.emotion_keywords.join(', ')}.`;
   if (v.material_focus) technicalParts.push(`Material: ${v.material_focus}`);
   if (v.color_palette) technicalParts.push(`Palette: ${v.color_palette}`);
   const technicalBlock = `[VISUAL EXECUTION]\n${technicalParts.join('. ')}.`;
-
   // --- BLOCK 4: CONTEXT (brand + global — minimal, at the end) ---
   const contextParts: string[] = [];
   if (globalContext.brand_tone) contextParts.push(`Brand tone: ${globalContext.brand_tone}`);
@@ -398,7 +379,6 @@ Emotion: ${n.emotion_keywords.join(', ')}.`;
   const contextBlock = contextParts.length > 0 
     ? `[CONTEXT]\n${contextParts.join('. ')}.`
     : '';
-
   // --- ASSEMBLE: Selling Point → Scene → Technical → Context ---
   const aspectNote = `Aspect ratio ${parseAspectRatio(globalContext.output_spec)}.`;
   const blocks = [sellingPointBlock, sceneBlock, technicalBlock, contextBlock, aspectNote]
