@@ -186,7 +186,7 @@ export default function VisualPromptApp() {
         const sp = sellingPoints[i];
         if (!sp.name.trim() || sp.status === 'completed' || sp.status === 'generating') continue;
         updateSP(i, { status: 'analyzing' });
-        const visual = await extractVisualParams(sp, currentGlobal.global_analysis);
+        const visual = await extractVisualParams(sp, currentGlobal);
         
         updateSP(i, { status: 'narrating', enrichment: { ...sp.enrichment, visual_params: visual } });
         const narrative = await generateNarrative({ ...sp, enrichment: { ...sp.enrichment, visual_params: visual } }, currentGlobal, sellingPoints);
@@ -214,12 +214,9 @@ export default function VisualPromptApp() {
       const prompt = sp.enrichment.final_prompt;
       
       // Collect reference images for the generation model.
-      // IMPORTANT: Selling point reference images are EXCLUDED — only text structure
-      // is used for selling point direction (to avoid generated images looking too similar).
-      // Priority order: model/outfit images first (for character consistency), then product, then env.
       const mediaIds: string[] = [];
       
-      // 1. Model & outfit images — highest priority (character consistency, up to 5 people)
+      // 1. Model & outfit images — highest priority (character consistency)
       globalContext.modelReferences.forEach((m) => {
         if (m.model) mediaIds.push(m.model.mediaId);
         if (m.suit) mediaIds.push(m.suit.mediaId);
@@ -230,12 +227,11 @@ export default function VisualPromptApp() {
       
       // 3. Environment image
       if (globalContext.environmentImage) mediaIds.push(globalContext.environmentImage.mediaId);
-
       const result = await Flow.generate.image({
         prompt,
         modelDisplayName: '🍌 Nano Banana Pro',
         aspectRatio: parseAspectRatio(globalContext.output_spec),
-        referenceImageMediaIds: mediaIds.slice(0, 14) // SDK supports max 14 images
+        referenceImageMediaIds: mediaIds.slice(0, 10) // SDK limit
       });
       updateSP(index, { status: 'completed', enrichment: { ...sp.enrichment, generatedImage: result } });
     } catch (err) {
