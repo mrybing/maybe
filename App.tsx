@@ -210,28 +210,34 @@ export default function VisualPromptApp() {
     if (sp.status !== 'awaiting_review' || !sp.enrichment.final_prompt) return;
     try {
       updateSP(index, { status: 'generating' });
-      
       const prompt = sp.enrichment.final_prompt;
       
-      // Collect reference images for the generation model.
       const mediaIds: string[] = [];
+      const mappingLines: string[] = [];
       
-      // 1. Model & outfit images — highest priority (character consistency)
-      globalContext.modelReferences.forEach((m) => {
-        if (m.model) mediaIds.push(m.model.mediaId);
-        if (m.suit) mediaIds.push(m.suit.mediaId);
+      const link = (token: string, mediaId: string, label: string) => {
+        if (prompt.includes(token)) {
+          mediaIds.push(mediaId);
+          mappingLines.push(`${token} → ${label} <ref:${mediaId}>`);
+        }
+      };
+      
+      globalContext.modelReferences.forEach((m, idx) => {
+        const letter = String.fromCharCode(65 + idx);
+        if (m.model) link(`{{MODEL_${letter}}}`, m.model.mediaId, `Model ${letter} (face/body)`);
+        if (m.suit) link(`{{OUTFIT_${letter}}}`, m.suit.mediaId, `Model ${letter} wardrobe`);
       });
       
-      // 2. Product image
-      if (globalContext.productImage) mediaIds.push(globalContext.productImage.mediaId);
-      
-      // 3. Environment image
-      if (globalContext.environmentImage) mediaIds.push(globalContext.environmentImage.mediaId);
+      if (globalContext.productImage) link('{{PRODUCT}}', globalContext.productImage.mediaId, 'Advertised Product');
+      if (globalContext.environmentImage) link('{{ENV}}', globalContext.environmentImage.mediaId, 'Environment');
+      const fullPrompt = mappingLines.length > 0
+        ? `[Reference Image Mapping]\n${mappingLines.join('\n')}\n\n${prompt}`
+        : prompt;
       const result = await Flow.generate.image({
-        prompt,
+        prompt: fullPrompt,
         modelDisplayName: '🍌 Nano Banana Pro',
         aspectRatio: parseAspectRatio(globalContext.output_spec),
-        referenceImageMediaIds: mediaIds.slice(0, 10) // SDK limit
+        referenceImageMediaIds: mediaIds.slice(0, 14)
       });
       updateSP(index, { status: 'completed', enrichment: { ...sp.enrichment, generatedImage: result } });
     } catch (err) {
@@ -324,7 +330,13 @@ export default function VisualPromptApp() {
                        )}
                     </div>
                     <TextInput value={sp.enrichment.final_prompt || ''} onChange={v => updateSP(idx, { enrichment: { ...sp.enrichment, final_prompt: v } })} rows={6} className="!bg-black/40 !text-[12px] leading-relaxed" />
-                    <PillButton variant="solid" className="w-full !bg-white !text-black" onClick={() => confirmAndGenerate(idx)} icon={<span className="material-symbols-outlined text-[18px]">bolt</span>}>Generate Campaign Visual</PillButton>
+                    <div className="flex items-center justify-between px-1">
+                      <span className={`text-[10px] font-mono ${(sp.enrichment.final_prompt?.length || 0) > 3600 ? 'text-red-400 font-bold' : 'text-white/30'}`}>
+                        {sp.enrichment.final_prompt?.length || 0}/3600
+                        {(sp.enrichment.final_prompt?.length || 0) > 3600 && ' ⚠ Exceeds limit — generation will fail'}
+                      </span>
+                    </div>
+                    <PillButton variant="solid" className="w-full !bg-white !text-black" onClick={() => confirmAndGenerate(idx)} disabled={(sp.enrichment.final_prompt?.length || 0) > 3600} icon={<span className="material-symbols-outlined text-[18px]">bolt</span>}>Generate Campaign Visual</PillButton>
                  </div>
                )}
                {sp.status === 'completed' && sp.enrichment.generatedImage && (
