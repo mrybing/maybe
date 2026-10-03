@@ -17,9 +17,11 @@ export interface VisualParams {
   spatial_relationship: string;   // Spatial arrangement between elements
 }
 export interface GlobalAnalysis {
-  style_description: string;
-  lighting_mood: string;
-  color_strategy: string;
+  image_type: string;     // 类型: 渲染图 / 摄影图 / 白底图 etc.
+  style_feel: string;     // 风格: 生活照 / 科技感 / 商业大片 etc.
+  color_tone: string;     // 色调
+  lighting: string;       // 光影
+  negative_space: string; // 留白空间
 }
 export interface NarrativeConcept {
   scene_setting: string;
