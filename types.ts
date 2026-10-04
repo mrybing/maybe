@@ -7,6 +7,8 @@ export interface VisualParams {
   camera_angle: string;
   shot_scale: string;
   image_type: ImageType;
+  requires_model: boolean;   // 成品图是否应该出现真人
+  model_count?: number;      // 成品图需要几位「主角」人物；requires_model 为 false 时为 0
   visual_signature_prompt: string;
   color_palette?: string;
   material_focus?: string;
@@ -48,6 +50,11 @@ export interface SellingPoint {
   name: string;
   description: string;
   referenceImage?: MediaAsset;
+  modelMode?: 'auto' | 'with_model' | 'no_model';  // auto=由 Node2 决定人数并随机抽人；with_model=手动勾选；no_model=纯产品
+  manualModelIds?: string[];   // modelMode=with_model 时勾选的 modelReferences id；空/未定义 = 全部
+  activeModelIds?: string[];   // Process 时固化的「实际使用模特」id，后续所有环节的唯一依据
+  envMode?: 'global' | 'custom' | 'none';  // 环境图作用域：用全局环境图(默认) / 用本卖点自己的 / 不用
+  environmentImage?: MediaAsset;           // 本卖点自己的环境图，仅 envMode='custom' 时使用
   enrichment: {
     visual_params: VisualParams | null;
     narrative_concept: NarrativeConcept | null;
