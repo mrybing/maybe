@@ -1,5 +1,15 @@
 import { Flow } from 'flow-sdk';
-import { SellingPoint, GlobalContext, VisualParams, NarrativeConcept, GlobalAnalysis } from '../types';
+import { SellingPoint, GlobalContext, VisualParams, NarrativeConcept, GlobalAnalysis, ModelSuitPair, MediaAsset } from '../types';
+/**
+ * K5: Data structure for a generation reference.
+ */
+export interface GenRef { 
+  index: number; 
+  token: string; 
+  noun: string; 
+  caption: string; 
+  asset: MediaAsset; 
+}
 /**
  * Utility: Safe JSON Parsing with basic self-healing
  */
@@ -21,21 +31,29 @@ ${text}`;
   }
 }
 /**
+ * K4: Resolves the effective GlobalContext for a specific Selling Point based on its environment mode.
+ */
+export function withSpEnv(sp: SellingPoint, globalContext: GlobalContext): GlobalContext {
+  const mode = sp.envMode || 'global';
+  if (mode === 'global') return globalContext;
+  if (mode === 'custom' && sp.environmentImage) {
+    return { ...globalContext, environmentImage: sp.environmentImage };
+  }
+  return { ...globalContext, environmentImage: undefined };
+}
+/**
  * Node One: Global Style Analysis
- * 
- * Unchanged — this node is already appropriate.
- * It extracts abstract style DNA from a reference image without over-asserting.
  */
 export async function extractGlobalParams(image: { base64: string; mimeType: string }): Promise<GlobalAnalysis> {
   const systemInstruction = `You are a high-end fashion and product photography consultant.
 Analyze this style reference image and extract ONLY these 5 dimensions. Keep each field to 10 English words or fewer.
 Output ONLY valid JSON:
 {
-  "image_type": "Type of image: e.g. product photography, 3D render, white-background cutout, lifestyle photo",
-  "style_feel": "Overall style: e.g. lifestyle casual, high-tech futuristic, cinematic commercial, editorial fashion",
-  "color_tone": "Color tone: e.g. warm earth tones, cool desaturated blues, high-contrast monochrome",
-  "lighting": "Lighting approach: e.g. soft wraparound rim light, dramatic side-lit chiaroscuro, flat high-key",
-  "negative_space": "White/negative space usage: e.g. large left negative space, tight crop no breathing room, centered subject generous margins"
+  "image_type": "Type of image: e.g. product photography, 3D render, lifestyle photo",
+  "style_feel": "Overall style: e.g. lifestyle casual, high-tech futuristic, editorial fashion",
+  "color_tone": "Color tone: e.g. warm earth tones, cool desaturated blues",
+  "lighting": "Lighting approach: e.g. soft wraparound rim light, dramatic side-lit",
+  "negative_space": "White/negative space usage: e.g. large left negative space, tight crop"
 }`;
   const { text } = await Flow.generate.text("Extract the 5 core visual style dimensions from this reference.", {
     systemInstruction,
@@ -44,66 +62,37 @@ Output ONLY valid JSON:
   return safeParseJSON<GlobalAnalysis>(text, "global style analysis");
 }
 /**
- * Node 二：Visual Extraction (视觉参数提取)
- * 
- * FIXES APPLIED:
- * 1. REMOVED globalContextNote injection — selling point reference analysis must be independent,
- *    not biased by the global style.
- * 2. REMOVED "CRITICAL RULE: Do NOT describe the specific person or product" — this was
- *    stripping the most valuable information from the selling point reference.
- * 3. ADDED new extraction fields: product_presentation, hero_element, mood_atmosphere,
- *    spatial_relationship — these capture the INTENT of the reference, not just technical params.
- * 4. Rewritten prompt to prioritize understanding HOW the selling point is visually communicated.
+ * Node Two: Visual Extraction
  */
 export async function extractVisualParams(sp: SellingPoint, globalContext: GlobalContext): Promise<VisualParams> {
   if (!sp.referenceImage) throw new Error('Missing reference image');
   const productIdentity = globalContext.product_info
-    ? `\nCRITICAL — THE PRODUCT BEING ADVERTISED IS: ${globalContext.product_info}\nWhen analyzing "product presentation" and "hero element", focus on THIS product specifically.\nOther items in the image (clothing, accessories worn by models, furniture, etc.) are NOT the product — they are props or styling.\n`
+    ? `\nCRITICAL — THE PRODUCT BEING ADVERTISED IS: ${globalContext.product_info}\n`
     : '';
   const systemInstruction = `You are a professional commercial photography analyst.
-Analyze this reference image to understand the VISUAL STRATEGY for communicating a selling point.
+Analyze this reference image to understand the VISUAL STRATEGY.
 ${productIdentity}
-ANALYSIS PRIORITIES (in order):
-1. PRODUCT PRESENTATION — How is the advertised product${globalContext.product_info ? ` (${globalContext.product_info})` : ''} showcased? Describe the presentation strategy.
-2. HERO ELEMENT — What is the single most dominant visual element?
-3. MOOD & ATMOSPHERE — What emotion does this image convey? (keep concise, 2-3 emotion words)
-4. SPATIAL RELATIONSHIP — How are elements arranged? Foreground/background/layering. Include model positions if models are present.
-5. TECHNICAL EXECUTION — Lighting, camera angle, lens, composition.
-You MAY and SHOULD describe the product and how it appears in the image.
-Do NOT describe specific human faces in detail (but body position, gesture, and styling are fine).
-WORD LIMITS — follow strictly:
-- subject: ≤20 words
-- product_presentation: ≤30 words
-- hero_element: ≤15 words
-- mood_atmosphere: ≤8 words (concise emotion descriptors only)
-- spatial_relationship: ≤30 words (include model positions and depth layers)
-- environment: ≤25 words (setting/background only, no product or model info)
-- lighting: ≤12 words
-- composition: ≤15 words
-- camera_angle: ≤6 words
-- shot_scale: ≤6 words
-- visual_signature_prompt: ≤25 words (concise visual+mood essence — lighting, composition, camera, and 1-2 emotion words)
-- color_palette: ≤12 words
-- material_focus: ≤12 words
 Output ONLY valid JSON with these fields:
 {
-  "subject": "main subject and visual treatment",
-  "product_presentation": "how the advertised product is staged, positioned, emphasized",
-  "hero_element": "the single most dominant visual element",
-  "mood_atmosphere": "2-3 concise emotion descriptors",
-  "spatial_relationship": "arrangement of elements including model positions and depth",
-  "lighting": "lighting setup and quality",
-  "environment": "setting/background description only",
-  "composition": "composition framework and visual flow",
-  "camera_angle": "camera angle",
-  "shot_scale": "shot scale",
+  "subject": "main subject and visual treatment (≤20 words)",
+  "product_presentation": "how the advertised product is staged (≤30 words)",
+  "hero_element": "the focal element (≤15 words)",
+  "mood_atmosphere": "2-3 emotion words",
+  "spatial_relationship": "arrangement and depth layers (≤30 words)",
+  "lighting": "lighting setup (≤12 words)",
+  "environment": "setting/background only (≤25 words)",
+  "composition": "visual flow (≤15 words)",
+  "camera_angle": "angle (≤6 words)",
+  "shot_scale": "scale (≤6 words)",
   "image_type": "one of: CGI_Abstract, Studio_Minimal, Lifestyle_Commercial, Unknown",
-  "visual_signature_prompt": "concise visual+mood essence for this image approach",
-  "color_palette": "dominant and accent colors",
-  "material_focus": "key material/texture qualities"
+  "requires_model": true or false,
+  "model_count": integer (0 if no model),
+  "visual_signature_prompt": "visual essence for the final prompt (≤25 words)",
+  "color_palette": "dominant colors",
+  "material_focus": "texture qualities"
 }`;
   const { text } = await Flow.generate.text(
-    `Analyze the visual strategy in this reference image for selling point: "${sp.name}" — "${sp.description}".${globalContext.product_info ? ` The product being advertised is: ${globalContext.product_info}.` : ''}`,
+    `Analyze the visual strategy for selling point: "${sp.name}" — "${sp.description}"`,
     {
       systemInstruction,
       images: [{ base64: sp.referenceImage.base64, mimeType: sp.referenceImage.mimeType }]
@@ -111,18 +100,98 @@ Output ONLY valid JSON with these fields:
   );
   return safeParseJSON<VisualParams>(text, "visual extraction");
 }
-// --- Narrative Helpers ---
-function buildInventory(globalContext: GlobalContext): string[] {
-  const inventory: string[] = [];
-  if (globalContext.productImage) inventory.push("{{PRODUCT}}");  // The actual product being advertised
-  if (globalContext.environmentImage) inventory.push("{{ENV}}");
-  // NOTE: {{STYLE}} removed from inventory — global style should influence tone, not be placed in scene.
-  globalContext.modelReferences.forEach((m, i) => {
-    const letter = String.fromCharCode(65 + i);
-    if (m.model) inventory.push(`{{MODEL_${letter}}}`);        // Model's face/body for character consistency
-    if (m.suit) inventory.push(`{{OUTFIT_${letter}}}`);        // Model's WARDROBE — NOT the advertised product
+// --- Narrative Helpers (K3: Unified Model Determination Logic) ---
+export function spUsesModels(sp: SellingPoint, globalContext: GlobalContext): boolean {
+  const available = availableModels(globalContext);
+  if (available.length === 0) return false;
+  if (sp.modelMode === 'with_model') return true;
+  if (sp.modelMode === 'no_model') return false;
+  const vp = sp.enrichment.visual_params;
+  if (!vp) return true;
+  if (typeof vp.requires_model === 'boolean') return vp.requires_model;
+  return vp.image_type === 'Lifestyle_Commercial' || vp.image_type === 'Unknown';
+}
+function availableModels(globalContext: GlobalContext): Array<{ pair: ModelSuitPair, letter: string }> {
+  return globalContext.modelReferences
+    .map((m, i) => ({ pair: m, letter: String.fromCharCode(65 + i) }))
+    .filter(item => item.pair.model || item.pair.suit);
+}
+export function resolveActiveModelIds(sp: SellingPoint, globalContext: GlobalContext): string[] {
+  if (!spUsesModels(sp, globalContext)) return [];
+  const available = availableModels(globalContext);
+  const availableIds = available.map(a => a.pair.id);
+  if (sp.modelMode === 'with_model') {
+    const selected = (sp.manualModelIds || []).filter(id => availableIds.includes(id));
+    return selected.length > 0 ? selected : availableIds;
+  }
+  const vp = sp.enrichment.visual_params;
+  const rawCount = vp?.model_count ?? 1;
+  const count = Math.max(1, Math.min(available.length, Math.round(rawCount)));
+  const shuffled = [...available].sort(() => Math.random() - 0.5);
+  const picked = shuffled.slice(0, count).map(a => a.pair.id);
+  return availableIds.filter(id => picked.includes(id));
+}
+export function getActiveModels(sp: SellingPoint, globalContext: GlobalContext): Array<{ pair: ModelSuitPair, letter: string }> {
+  const isNeeded = spUsesModels(sp, globalContext);
+  if (!isNeeded) return [];
+  const available = availableModels(globalContext);
+  const activeIds = sp.activeModelIds || available.map(a => a.pair.id);
+  return available.filter(a => activeIds.includes(a.pair.id));
+}
+/**
+ * K5: Deterministic Reference Builder.
+ * This is the SINGLE source of truth for reference order and mediaIds.
+ */
+export function buildGenerationRefs(sp: SellingPoint, globalContext: GlobalContext): GenRef[] {
+  const envContext = withSpEnv(sp, globalContext);
+  const refs: GenRef[] = [];
+  
+  const push = (token: string, noun: string, caption: string, asset?: MediaAsset) => {
+    if (!asset) return;
+    refs.push({
+      index: refs.length + 1,
+      token,
+      noun,
+      caption,
+      asset
+    });
+  };
+  // 1. PRODUCT
+  push('{{PRODUCT}}', 'the product', 'the advertised product (keep exact shape, logo, proportions)', envContext.productImage);
+  // 2. ENVIRONMENT
+  push('{{ENV}}', 'the environment', 'environment/scene reference', envContext.environmentImage);
+  // 3. MODELS (Iterate through ALL global references to preserve A, B, C letters)
+  const activeIds = sp.activeModelIds || [];
+  globalContext.modelReferences.forEach((pair, idx) => {
+    if (!activeIds.includes(pair.id)) return;
+    const letter = String.fromCharCode(65 + idx);
+    push(`{{MODEL_${letter}}}`, 'the person', `Model ${letter} face and body (keep identity)`, pair.model);
+    push(`{{OUTFIT_${letter}}}`, 'the outfit', `Model ${letter} outfit (clothing, not the product)`, pair.suit);
   });
-  return inventory;
+  return refs.slice(0, 14);
+}
+/**
+ * K5: Resolves prompt tokens to human-readable indices and adds the legend.
+ */
+function resolveTokensToImageRefs(text: string, refs: GenRef[]): string {
+  if (refs.length === 0) {
+    return text.replace(/\{\{[A-Z0-9_]+\}\}/g, '').replace(/\s{2,}/g, ' ').trim();
+  }
+  let processed = text;
+  refs.forEach(ref => {
+    const replacement = `${ref.noun} from image ${ref.index}`;
+    processed = processed.split(ref.token).join(replacement);
+  });
+  processed = processed.replace(/\{\{[A-Z0-9_]+\}\}/g, '').replace(/\s{2,}/g, ' ').trim();
+  const legendItems = refs.map(r => `image ${r.index} = ${r.caption}`);
+  const header = `Reference images: ${legendItems.join('; ')}.`;
+  return `${header}\n\n${processed}`;
+}
+/**
+ * K6: Inventory now strictly derived from K5 generation references.
+ */
+function buildInventory(sp: SellingPoint, globalContext: GlobalContext): string[] {
+  return buildGenerationRefs(sp, globalContext).map(r => r.token);
 }
 function extractTokens(n: NarrativeConcept): string[] {
   const text = [n.scene_setting, n.subject_setup, n.props, n.model_choreography || ''].join(' ');
@@ -141,92 +210,42 @@ function stripInvalidTokens(text: string, invalid: string[]): string {
   return out.replace(/\s{2,}/g, ' ').trim();
 }
 /**
- * Build a description of model references for the LLM to understand.
- * This tells the LLM what each model image looks like.
- */
-function buildModelImageDescriptions(globalContext: GlobalContext): string {
-  const modelRefs = globalContext.modelReferences.filter(m => m.model || m.suit);
-  if (modelRefs.length === 0) return '';
-  const lines = modelRefs.map((m, i) => {
-    const letter = String.fromCharCode(65 + i);
-    const parts: string[] = [];
-    if (m.model) parts.push(`{{MODEL_${letter}}}: See attached image (model face/body reference — MUST maintain this person's appearance)`);
-    if (m.suit) parts.push(`{{OUTFIT_${letter}}}: See attached image (outfit/styling reference — MUST maintain this clothing's appearance)`);
-    return parts.join('\n');
-  });
-  return lines.join('\n');
-}
-/**
- * Collect all images that should be passed to generateNarrative for the LLM to see.
- * This includes: product image, selling point reference, model images, outfit images.
- * The LLM needs to SEE these to direct the scene properly.
+ * K6: Updated order: Product → Environment → SP Reference → Models
  */
 function collectNarrativeImages(sp: SellingPoint, globalContext: GlobalContext): Array<{ base64: string; mimeType: string }> {
+  const envContext = withSpEnv(sp, globalContext);
   const images: Array<{ base64: string; mimeType: string }> = [];
-  // 1. Product image — if available
-  if (globalContext.productImage) {
-    images.push({ base64: globalContext.productImage.base64, mimeType: globalContext.productImage.mimeType });
-  }
-  // 2. Environment reference — placed BEFORE selling point ref for higher priority
-  if (globalContext.environmentImage) {
-    images.push({ base64: globalContext.environmentImage.base64, mimeType: globalContext.environmentImage.mimeType });
-  }
-  // 3. Selling point reference — LLM should SEE this for visual approach
-  if (sp.referenceImage) {
-    images.push({ base64: sp.referenceImage.base64, mimeType: sp.referenceImage.mimeType });
-  }
-  // 4. Model reference images
-  globalContext.modelReferences.forEach(m => {
-    if (m.model) images.push({ base64: m.model.base64, mimeType: m.model.mimeType });
-    if (m.suit) images.push({ base64: m.suit.base64, mimeType: m.suit.mimeType });
+  
+  if (envContext.productImage) images.push({ base64: envContext.productImage.base64, mimeType: envContext.productImage.mimeType });
+  if (envContext.environmentImage) images.push({ base64: envContext.environmentImage.base64, mimeType: envContext.environmentImage.mimeType });
+  if (sp.referenceImage) images.push({ base64: sp.referenceImage.base64, mimeType: sp.referenceImage.mimeType });
+  
+  getActiveModels(sp, globalContext).forEach(({ pair }) => {
+    if (pair.model) images.push({ base64: pair.model.base64, mimeType: pair.model.mimeType });
+    if (pair.suit) images.push({ base64: pair.suit.base64, mimeType: pair.suit.mimeType });
   });
   return images;
 }
 /**
- * Build an image legend for the LLM, describing what each attached image represents.
+ * K6: Updated legend matches collectNarrativeImages order.
  */
 function buildImageLegend(sp: SellingPoint, globalContext: GlobalContext): string {
+  const envContext = withSpEnv(sp, globalContext);
   const legend: string[] = [];
   let idx = 1;
-  if (globalContext.productImage) {
-    const productName = globalContext.product_info ? ` (${globalContext.product_info})` : '';
-    legend.push(`Image ${idx}: {{PRODUCT}}${productName} — THE PRODUCT BEING ADVERTISED. Must be the visual hero.`);
-    idx++;
-  }
-  // Environment reference comes before SP reference — higher priority for scene/setting
-  if (globalContext.environmentImage) {
-    legend.push(`Image ${idx}: {{ENV}} — ENVIRONMENT/SCENE REFERENCE [HIGH PRIORITY]. Use this as the PRIMARY source for all environment and setting descriptions. This OVERRIDES any environment details from the selling point reference.`);
-    idx++;
-  }
-  if (sp.referenceImage) {
-    const envOverrideNote = globalContext.environmentImage
-      ? ' NOTE: An environment reference image has been provided separately — use THAT for environment/setting. From this image, extract ONLY composition strategy, product staging, and mood — IGNORE its background/environment.'
-      : '';
-    legend.push(`Image ${idx}: SELLING POINT REFERENCE — Shows the desired VISUAL APPROACH for composition and product presentation.${envOverrideNote}`);
-    idx++;
-  }
-  globalContext.modelReferences.forEach((m, i) => {
-    const letter = String.fromCharCode(65 + i);
-    if (m.model) {
-      legend.push(`Image ${idx}: {{MODEL_${letter}}} — Character reference. Maintain this person's appearance exactly.`);
-      idx++;
-    }
-    if (m.suit) {
-      legend.push(`Image ${idx}: {{OUTFIT_${letter}}} — WARDROBE for Model ${letter}. NOT the advertised product.`);
-      idx++;
-    }
+  
+  if (envContext.productImage) { legend.push(`Image ${idx}: {{PRODUCT}} — ADVERTISED PRODUCT.`); idx++; }
+  if (envContext.environmentImage) { legend.push(`Image ${idx}: {{ENV}} — ENVIRONMENT REFERENCE.`); idx++; }
+  if (sp.referenceImage) { legend.push(`Image ${idx}: SELLING POINT REFERENCE.`); idx++; }
+  
+  getActiveModels(sp, globalContext).forEach(({ pair, letter }) => {
+    if (pair.model) { legend.push(`Image ${idx}: {{MODEL_${letter}}} — Character reference.`); idx++; }
+    if (pair.suit) { legend.push(`Image ${idx}: {{OUTFIT_${letter}}} — WARDROBE for Model ${letter}.`); idx++; }
   });
   return legend.join('\n');
 }
 /**
- * Node 三：Asset-Aware Narrative Concept Node (叙事构思)
- * 
- * v2 改造:
- * - 模特姿态强化：要求具体的肢体、表情、视线、互动描述
- * - subject_setup 覆盖模特姿态 + 空间关系 + 产品交互
- * - scene_setting 纯环境/背景
- * - 场景参考图覆盖：environmentImage 存在时覆盖卖点参考图的环境描述
- * - visual_params 作为参考输入，narrative 输出优先级更高
+ * Node 三：Narrative Concept
  */
 export async function generateNarrative(
   sp: SellingPoint, 
@@ -234,268 +253,105 @@ export async function generateNarrative(
   allSPs: SellingPoint[] = [],
   maxRetries = 2
 ): Promise<NarrativeConcept> {
+  const envContext = withSpEnv(sp, globalContext);
   const visual = sp.enrichment.visual_params!;
-  const aspectRatio = parseAspectRatio(globalContext.output_spec);
-  const inventory = buildInventory(globalContext);
+  const useModels = spUsesModels(sp, globalContext);
+  const activeModels = getActiveModels(sp, globalContext);
+  const modelCount = activeModels.length;
+  const modelLetters = activeModels.map(x => `Model ${x.letter}`).join(', ');
+  const hasEnvImage = !!envContext.environmentImage;
+  
+  const inventory = buildInventory(sp, globalContext);
   const images = collectNarrativeImages(sp, globalContext);
   const imageLegend = buildImageLegend(sp, globalContext);
+  const modelDirectionSection = modelCount > 1 
+    ? `MODEL DIRECTION: Since multiple models are featured, you MUST provide a "model_choreography" plan detailing the positioning and interaction of all leads. In subject_setup, focus on their combined interaction with {{PRODUCT}}.\n`
+    : modelCount === 1
+    ? `MODEL DIRECTION: Since 1 model is featured, describe their body pose, gaze, and interaction with {{PRODUCT}} in detail within subject_setup.\n`
+    : '';
+  const noModelSection = !useModels ? `
+NO HUMAN MODEL: This selling point's image type (${visual.image_type}) is product-focused. Do NOT include any person, hands, or body parts. Focus entirely on the product and its staging.
+` : '';
+  const castSection = modelCount > 0 ? `
+CAST: The featured (lead) people are ${modelLetters}. Only they use model tokens and keep their reference identity. If the scene naturally needs more people (e.g. party, crowd, group activity), you MAY add unnamed extras described generically (no tokens), keeping the leads and {{PRODUCT}} as the focus.
+` : '';
   
-  const modelCount = globalContext.modelReferences.filter(m => m.model).length;
-  const hasEnvImage = !!globalContext.environmentImage;
-  
-  const otherSPContext = allSPs
-    .filter(s => s.sp_id !== sp.sp_id && s.enrichment.narrative_concept)
-    .map(s => `- "${s.name}": ${s.enrichment.narrative_concept!.scene_setting}`)
-    .join('\n');
   const buildSystemInstruction = (correction?: string) => {
-    // --- Scene override instruction when environment reference image is provided ---
-    const envOverrideSection = hasEnvImage ? `
-═══════════════════════════════════════════
-ENVIRONMENT OVERRIDE [CRITICAL]:
-A dedicated ENVIRONMENT REFERENCE IMAGE ({{ENV}}) has been provided.
-Use {{ENV}} as the PRIMARY and ONLY source for all environment/setting/background descriptions in scene_setting.
-IGNORE any environment or background details from the selling point reference image.
-The selling point reference image should ONLY inform: composition strategy, product staging approach, and mood.
-═══════════════════════════════════════════
-` : '';
-    // --- Model direction section with concrete pose examples ---
-    const modelDirectionSection = modelCount > 1 ? `
-MODEL DIRECTION [CRITICAL — this drives image quality]:
-You have ${modelCount} models. For EACH model, you MUST describe in subject_setup:
-1. BODY POSE: Weight distribution, limb positions, torso angle (e.g. "leaning forward, weight on front foot, left hand reaching up to adjust earbuds")
-2. GAZE & EXPRESSION: Where they look, facial expression (e.g. "looking down at phone with relaxed half-smile" or "eyes closed, chin slightly lifted, serene expression")
-3. PRODUCT INTERACTION: How they physically relate to the product (e.g. "right hand gently touching the earbud on left ear")
-4. SPATIAL POSITION: Where in the frame, distance from camera, relationship to other models (e.g. "foreground left third, 2m from camera, facing toward MODEL_B in center")
-Example of GOOD model direction:
-"{{MODEL_A}} stands in the left third of the frame, weight shifted to her right hip, left hand casually holding a coffee cup at waist level, head tilted slightly right with a warm, candid smile, the {{PRODUCT}} visible on her right ear catching the rim light. {{MODEL_B}} sits on the concrete ledge in the right third, one knee drawn up, scrolling through phone with earbuds in, relaxed posture, looking down at screen with a focused but calm expression."
-Example of BAD model direction (too vague):
-"{{MODEL_A}} is on the left side looking stylish. {{MODEL_B}} is on the right using the product."
-Each model MUST serve a distinct narrative role. The PRIMARY model interacts with the product.
-Output a "model_choreography" field with the full multi-model staging plan.
-` : modelCount === 1 ? `
-MODEL DIRECTION [CRITICAL — this drives image quality]:
-For the model, you MUST describe in subject_setup:
-1. BODY POSE: Weight distribution, limb positions, torso angle (be specific — not just "standing" or "walking")
-2. GAZE & EXPRESSION: Where they look, what expression (be specific — not just "happy" or "focused")
-3. PRODUCT INTERACTION: How they physically relate to the product (e.g. "right hand lightly touching earbud, fingers curved around ear")
-4. SPATIAL POSITION: Where in the frame relative to camera and environment
-Example of GOOD: "{{MODEL_A}} mid-stride on a rain-slicked sidewalk, weight on left foot pushing off, right arm swinging naturally, head turned slightly right with a determined grin, the {{PRODUCT}} snug on both ears with the matte casing catching street-lamp glow."
-Example of BAD: "{{MODEL_A}} is walking and wearing the product, looking confident."
-` : '';
-    const crossSPSection = otherSPContext ? `
-OTHER SCENES IN THIS CAMPAIGN (for visual consistency reference):
-${otherSPContext}
-Maintain visual consistency while keeping this selling point's focus distinct.
-` : '';
-    return `You are a Creative Director designing a scene for premium product photography.
-Study the attached reference images carefully before writing.
-ATTACHED IMAGES:
+    return `You are a Creative Director designing a scene.
+Study the attached images carefully.
 ${imageLegend}
-${envOverrideSection}
-PRODUCT IDENTITY:
-${globalContext.product_info || 'See {{PRODUCT}} image'}
-This is the ONLY product being promoted. All other items are props/styling.
-PRIMARY DIRECTIVE — SELLING POINT:
-Name: "${sp.name}"
-Description: "${sp.description}"
-VISUAL APPROACH REFERENCE (from selling point analysis — use as guidance, your narrative takes priority):
-- Product Presentation: ${visual.product_presentation}
-- Hero Element: ${visual.hero_element}
-- Mood: ${visual.mood_atmosphere}
-- Spatial Arrangement: ${visual.spatial_relationship}
-- Subject: ${visual.subject}
-- Lighting: ${visual.lighting}
-- Environment: ${visual.environment}${hasEnvImage ? ' [OVERRIDDEN by {{ENV}} image — ignore this]' : ''}
-- Composition: ${visual.composition}
-- Camera: ${visual.camera_angle}, ${visual.shot_scale}
-${visual.color_palette ? `- Color Palette: ${visual.color_palette}` : ''}
-${visual.material_focus ? `- Material Focus: ${visual.material_focus}` : ''}
-Target Aspect Ratio: ${aspectRatio}
-Image Mode: ${visual.image_type}${visual.image_type === 'CGI_Abstract' ? ' — use abstract/surreal staging' : ''}
-AVAILABLE VISUAL ASSETS (Use ONLY these exact tokens):
+PRODUCT: ${globalContext.product_info || '{{PRODUCT}}'}
+SELLING POINT: "${sp.name}" - ${sp.description}
+AVAILABLE ASSETS (Use ONLY these tags):
 ${inventory.join(', ')}
-TOKEN SEMANTICS:
-- {{PRODUCT}} = the advertised product${globalContext.product_info ? ` (${globalContext.product_info})` : ''}.
-- {{MODEL_X}} = a human model (character consistency).
-- {{OUTFIT_X}} = the model's WARDROBE (NOT the advertised product).
-- {{ENV}} = environment/location reference.
-${modelDirectionSection}
-BRAND CONTEXT (reference only):
-Tone: ${globalContext.brand_tone || 'Premium'}
-${crossSPSection}
+${modelDirectionSection}${castSection}${noModelSection}
+BRAND CONTEXT:
+${globalContext.brand_tone || 'Standard high-end commercial style.'}
 RULES:
-1. Only use tags from AVAILABLE VISUAL ASSETS. Copy tags EXACTLY.
-2. {{PRODUCT}} MUST appear prominently in subject_setup. Product is ${globalContext.product_info || '{{PRODUCT}}'}, NOT model clothing.
-3. Do not alter product shape, logo, or proportions.
-4. For ${aspectRatio}: ${aspectRatio === '16:9' ? 'use horizontal sweep and background depth' : aspectRatio === '9:16' ? 'use vertical focus and headroom' : 'balanced framing'}.
-5. Scene MUST serve the selling point "${sp.name}".
-6. scene_setting = ONLY environment/background/setting description. NO product or model info here.
-7. subject_setup = product placement + model poses (with specific body/gaze/expression/interaction details) + spatial relationships between elements.
-8. {{OUTFIT_X}} is clothing, NOT the product.${hasEnvImage ? '\n9. Use {{ENV}} image for ALL environment descriptions. IGNORE environment from selling point reference.' : ''}
-${correction ? `\nCORRECTION NEEDED: ${correction}\nRewrite strictly following rule 1.` : ''}
+1. {{PRODUCT}} must be the hero.
+2. If models are present, keep their interaction realistic and brand-appropriate.
+3. scene_setting = background ONLY.
+4. subject_setup = detailed product/model interaction.
+5. If no model is used, subject_setup MUST NOT contain any people, hands, or body parts.
+${correction ? `\nCORRECTION: ${correction}` : ''}
 Output ONLY valid JSON:
-- scene_setting (string): Environment and background ONLY (≤80 words). ${hasEnvImage ? 'Must be based on the {{ENV}} reference image.' : ''}
-- subject_setup (string): Product placement + each model's detailed pose/gaze/expression/interaction + spatial relationships (≤150 words). This is the MOST IMPORTANT field.
-- props (string): Supporting elements, brief (≤30 words)
-- emotion_keywords (string[]): 3 concise emotion words${modelCount > 1 ? '\n- model_choreography (string): Full multi-model staging plan with each model\'s exact position, pose, gaze, expression, and product interaction' : ''}`;
+{
+  "scene_setting": "environment string",
+  "subject_setup": "interaction string",
+  "props": "props string",
+  "emotion_keywords": ["word1", "word2"],
+  "model_choreography": "full staging plan (required if models > 1)"
+}`;
   };
-  
-  const prompt = `Design a scene that powerfully communicates this selling point: "${sp.name}" — ${sp.description}`;
   
   let correction: string | undefined;
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
-    const { text } = await Flow.generate.text(prompt, { 
+    const { text } = await Flow.generate.text(`Narrative for: ${sp.name}`, { 
       systemInstruction: buildSystemInstruction(correction),
       images: images.length > 0 ? images : undefined
     });
     const narrative = await safeParseJSON<NarrativeConcept>(text, "narrative concept");
     const used = extractTokens(narrative);
     const { invalid, missingRequired } = validateTokens(used, inventory);
-    if (invalid.length === 0 && missingRequired.length === 0) {
-      return narrative;
-    }
+    if (invalid.length === 0 && missingRequired.length === 0) return narrative;
+    correction = `Undeclared tags used: ${invalid.join(', ')}`;
     if (attempt === maxRetries) {
       narrative.subject_setup = stripInvalidTokens(narrative.subject_setup, invalid);
-      narrative.scene_setting = stripInvalidTokens(narrative.scene_setting, invalid);
-      narrative.props = stripInvalidTokens(narrative.props, invalid);
-      if (narrative.model_choreography) {
-        narrative.model_choreography = stripInvalidTokens(narrative.model_choreography, invalid);
-      }
-      narrative._autoCorrected = invalid.length > 0;
+      narrative._autoCorrected = true;
       return narrative;
     }
-    correction = [
-      invalid.length ? `You used undeclared tags: ${invalid.join(', ')}.` : '',
-      missingRequired.length ? `You forgot required tag(s): ${missingRequired.join(', ')}.` : ''
-    ].filter(Boolean).join(' ');
   }
-  throw new Error('Unreachable: Narrative loop failed');
+  throw new Error('Narrative failed');
 }
 /**
  * Node 四：Prompt Assembly Compiler
- * 
- * v2 重写 — 新 4-block 结构:
- * [PRODUCT]            ≤200 chars  — 产品身份 + 卖点
- * [MODEL & COMPOSITION] ≤1200 chars — 模特姿态 + 构图 + 空间关系（核心块）
- * [SCENE]              ≤800 chars  — 环境 + 道具 + 氛围
- * [STYLE]              ≤400 chars  — 类型|风格|色调|光影|留白（一行化）
- * 
- * 去重策略：每个信息只在一个 block 出现
- * - visual_params.product_presentation → [PRODUCT]
- * - visual_params.composition/camera/shot/spatial → [MODEL & COMPOSITION]
- * - visual_params.environment → 不出现（被 narrative.scene_setting 覆盖）
- * - narrative.scene_setting → [SCENE]
- * - narrative.subject_setup + model_choreography → [MODEL & COMPOSITION]
- * - global_analysis 5维度 → [STYLE]
- * 
- * 3600 字符硬守卫：超限时从 [STYLE] → [SCENE].props 逐步削减
  */
-const MAX_PROMPT_LENGTH = 3600;
-/**
- * Truncate prompt to fit within MAX_PROMPT_LENGTH.
- * Strategy: progressively trim lower-priority content.
- */
-function truncateToLimit(prompt: string): string {
-  if (prompt.length <= MAX_PROMPT_LENGTH) return prompt;
-  
-  // Strategy 1: Remove [STYLE] block content (keep header)
-  let result = prompt.replace(
-    /\[STYLE\]\n.+/s,
-    '[STYLE]\n(trimmed for length)'
-  );
-  if (result.length <= MAX_PROMPT_LENGTH) return result;
-  
-  // Strategy 2: Remove Props line from [SCENE]
-  result = result.replace(/\nProps: .+\./m, '');
-  if (result.length <= MAX_PROMPT_LENGTH) return result;
-  
-  // Strategy 3: Hard truncate from the end, preserving [PRODUCT] and [MODEL & COMPOSITION]
-  return result.substring(0, MAX_PROMPT_LENGTH - 3) + '...';
-}
 export function compilePrompt(sp: SellingPoint, globalContext: GlobalContext): string {
   const v = sp.enrichment.visual_params!;
   const n = sp.enrichment.narrative_concept!;
   const g = globalContext.global_analysis;
+  const productBlock = `[PRODUCT]\n${globalContext.product_info || 'Product'}, ${sp.name}\n${v.product_presentation}`;
   
-  // --- BLOCK 1: PRODUCT (concise identity + selling point) ---
-  const productBlock = `[PRODUCT]
-${globalContext.product_info || 'Product'}, Selling point: "${sp.name}"
-${sp.description}
-Product presentation: ${v.product_presentation}`;
-  // --- BLOCK 2: MODEL & COMPOSITION (the core block — detailed poses + spatial) ---
-  const modelParts: string[] = [];
+  const blockTitle = spUsesModels(sp, globalContext) ? 'MODEL & COMPOSITION' : 'SUBJECT & COMPOSITION';
+  const modelBlock = `[${blockTitle}]\n${n.subject_setup}${n.model_choreography ? `\n${n.model_choreography}` : ''}\n${v.composition}, ${v.camera_angle}, Hero: ${v.hero_element}`;
   
-  // Subject setup from narrative (contains model poses + product interaction + spatial relationships)
-  modelParts.push(n.subject_setup);
+  const sceneBlock = `[SCENE]\n${n.scene_setting}\nProps: ${n.props}. Emotion: ${n.emotion_keywords.join(', ')}.`;
   
-  // Model choreography for multi-model (detailed per-model staging)
-  if (n.model_choreography) {
-    modelParts.push(n.model_choreography);
-  }
+  const styleDimensions = g 
+    ? `Type: ${g.image_type} | Style: ${g.style_feel} | Tone: ${g.color_tone} | Light: ${g.lighting}`
+    : `Type: ${v.image_type} | Light: ${v.lighting}${v.color_palette ? ` | Tone: ${v.color_palette}` : ''}`;
   
-  // Composition + camera (from visual_params — only appears here, not in other blocks)
-  const compositionLine = [
-    v.composition,
-    `${v.camera_angle}`,
-    `${v.shot_scale}`
-  ].filter(Boolean).join(', ');
-  modelParts.push(`Composition: ${compositionLine}.`);
-  
-  // Hero element — the visual focal point
-  modelParts.push(`Hero element: ${v.hero_element}.`);
-  
-  // Mood from visual_params (concise emotion words — only here, not in [SCENE])
-  modelParts.push(`Mood: ${v.mood_atmosphere}.`);
-  const modelBlock = `[MODEL & COMPOSITION]\n${modelParts.join('\n')}`;
-  // --- BLOCK 3: SCENE (environment + props + emotion keywords — no model/product info) ---
-  const sceneParts: string[] = [];
-  sceneParts.push(n.scene_setting);
-  if (n.props && n.props.trim()) {
-    sceneParts.push(`Props: ${n.props}.`);
-  }
-  sceneParts.push(`Emotion: ${n.emotion_keywords.slice(0, 3).join(', ')}.`);
-  // Material focus from visual_params — placed in scene context
-  if (v.material_focus) {
-    sceneParts.push(`Material: ${v.material_focus}.`);
-  }
-  const sceneBlock = `[SCENE]\n${sceneParts.join('\n')}`;
-  // --- BLOCK 4: STYLE (5 dimensions — one-line-ish, from global_analysis) ---
-  // Style block only contains: type, feel, color tone, lighting, negative space
-  // Falls back to visual_params if no global style image was provided
-  const styleDimensions: string[] = [];
-  if (g) {
-    styleDimensions.push(`Type: ${g.image_type}`);
-    styleDimensions.push(`Style: ${g.style_feel}`);
-    styleDimensions.push(`Tone: ${g.color_tone}`);
-    styleDimensions.push(`Light: ${g.lighting}`);
-    styleDimensions.push(`Space: ${g.negative_space}`);
-  } else {
-    // Fallback: derive from visual_params + image_type
-    let typeLabel = "Commercial photography";
-    if (v.image_type === 'CGI_Abstract') typeLabel = "3D render, CGI";
-    else if (v.image_type === 'Studio_Minimal') typeLabel = "Studio product photography";
-    else if (v.image_type === 'Lifestyle_Commercial') typeLabel = "Lifestyle commercial photography";
-    styleDimensions.push(`Type: ${typeLabel}`);
-    styleDimensions.push(`Light: ${v.lighting}`);
-    if (v.color_palette) styleDimensions.push(`Tone: ${v.color_palette}`);
-  }
-  // Brand tone as a compact addition
-  if (globalContext.brand_tone) {
-    styleDimensions.push(`Brand: ${globalContext.brand_tone}`);
-  }
-  const styleBlock = `[STYLE]\n${styleDimensions.join(' | ')}`;
-  // --- ASSEMBLE: Product → Model & Composition → Scene → Style → Aspect ---
+  const styleBlock = `[STYLE]\n${styleDimensions}`;
   const aspectNote = `Aspect ratio ${parseAspectRatio(globalContext.output_spec)}.`;
-  const blocks = [productBlock, modelBlock, sceneBlock, styleBlock, aspectNote]
-    .filter(b => b.length > 0);
-  const raw = blocks.join('\n\n');
   
-  return truncateToLimit(raw);
+  const raw = [productBlock, modelBlock, sceneBlock, styleBlock, aspectNote].join('\n\n');
+  
+  // K5: Resolve tokens to indices based on deterministic buildGenerationRefs
+  const refs = buildGenerationRefs(sp, globalContext);
+  return resolveTokensToImageRefs(raw, refs).slice(0, 3600);
 }
 export function parseAspectRatio(spec: string): '1:1' | '16:9' | '9:16' | '4:3' | '3:4' {
   const ratios: (['1:1', '16:9', '9:16', '4:3', '3:4']) = ['1:1', '16:9', '9:16', '4:3', '3:4'];
-  for (const r of ratios) {
-    if (spec.includes(r)) return r as any;
-  }
+  for (const r of ratios) { if (spec.includes(r)) return r as any; }
   return '16:9';
 }
